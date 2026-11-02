@@ -248,6 +248,39 @@ export function ProjectPage() {
 
   function handleEvent(event: ServerEvent) {
     switch (event.type) {
+      case 'message.delta': {
+        const text = event.text
+        setItems((prev) => {
+          const idx = prev.findIndex(
+            (item) => item.kind === 'message' && item.message.id === event.message_id,
+          )
+          const message: Message = {
+            id: event.message_id,
+            project_id: id,
+            role: 'assistant',
+            agent_id: event.role ?? null,
+            kind: 'agent',
+            content: { text },
+            created_at: new Date().toISOString(),
+          }
+          if (idx >= 0) {
+            const next = [...prev]
+            const existing = next[idx]!
+            if (existing.kind !== 'message') return prev
+            next[idx] = {
+              kind: 'message',
+              message: {
+                ...existing.message,
+                content: { text },
+                agent_id: event.role ?? existing.message.agent_id,
+              },
+            }
+            return next
+          }
+          return [...prev, { kind: 'message', message }]
+        })
+        break
+      }
       case 'message': {
         const message: Message = {
           id: event.message_id,
@@ -263,7 +296,17 @@ export function ProjectPage() {
           content: event.content,
           created_at: new Date().toISOString(),
         }
-        setItems((prev) => [...prev, { kind: 'message', message }])
+        setItems((prev) => {
+          const idx = prev.findIndex(
+            (item) => item.kind === 'message' && item.message.id === event.message_id,
+          )
+          if (idx >= 0) {
+            const next = [...prev]
+            next[idx] = { kind: 'message', message }
+            return next
+          }
+          return [...prev, { kind: 'message', message }]
+        })
         void listMessages(id).then((msgs) => cacheMessages(id, msgs))
         if (event.kind === 'version' || event.kind === 'restore' || event.kind === 'revert') {
           void invalidateMessages(id).then(() => hydrateFromServer())
@@ -778,7 +821,10 @@ function MessageBubble({
     )
   }
 
-  const content = message.content as { text?: string }
+  const content = message.content as { text?: string; process?: string[] }
+  const processSteps = Array.isArray(content?.process)
+    ? content.process.filter((s) => typeof s === 'string' && s.trim())
+    : []
   const text =
     typeof content?.text === 'string'
       ? content.text
@@ -794,8 +840,12 @@ function MessageBubble({
           ? '系统'
           : message.role
   const isUser = message.role === 'user' || message.kind === 'user'
-  const long = !isUser && (text.length > 280 || text.split('\n').length > 8)
-  const preview = text.replace(/\s+/g, ' ').trim().slice(0, 100)
+  const stepCount = processSteps.length
+  const long =
+    !isUser &&
+    (stepCount > 1 || text.length > 280 || text.split('\n').length > 8)
+  const previewSource = processSteps[processSteps.length - 1] ?? text
+  const preview = previewSource.replace(/\s+/g, ' ').trim().slice(0, 100)
 
   return (
     <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 p-3">
@@ -804,10 +854,15 @@ function MessageBubble({
         title={
           <span className="text-[11px] tracking-wide text-sky-700 dark:text-sky-400/90">
             {label}
-            {long ? <span className="text-slate-400"> · 过程</span> : null}
+            {long ? (
+              <span className="text-slate-400">
+                {' '}
+                · 过程{stepCount > 1 ? ` (${stepCount})` : ''}
+              </span>
+            ) : null}
           </span>
         }
-        subtitle={long ? preview + (text.length > 100 ? '…' : '') : undefined}
+        subtitle={long ? preview + (previewSource.length > 100 ? '…' : '') : undefined}
         actions={
           message.agent_id === 'alex' && message.kind === 'agent' ? (
             <button type="button" className="text-[11px] text-slate-500 shrink-0" onClick={onRevert}>
@@ -816,7 +871,20 @@ function MessageBubble({
           ) : undefined
         }
       >
-        <Markdown text={text} />
+        {processSteps.length > 1 ? (
+          <div className="space-y-3">
+            {processSteps.map((step, i) => (
+              <div key={i} className="space-y-1">
+                <div className="text-[10px] uppercase tracking-wide text-slate-400">
+                  step {i + 1}
+                </div>
+                <Markdown text={step} />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <Markdown text={text} />
+        )}
       </Collapsible>
     </div>
   )

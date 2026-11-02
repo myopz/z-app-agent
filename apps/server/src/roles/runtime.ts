@@ -2,9 +2,9 @@ import { nanoid } from 'nanoid'
 import type { Brief, RoleId, ToolCall } from '@z-app-agent/shared'
 import { insertMessage, listMessages } from '../db/repos.ts'
 import { publish } from '../events/bus.ts'
-import { chatComplete } from '../llm/client.ts'
+import { chatComplete, type ChatMessage } from '../llm/client.ts'
 import { assembleMessages } from '../prompt/assembler.ts'
-import { executeTool, isWriteTool } from '../tools/executor.ts'
+import { executeTool, isWriteTool, type ExecResult } from '../tools/executor.ts'
 import {
   looksLikeToolAttempt,
   parseToolCalls,
@@ -12,7 +12,9 @@ import {
 } from '../tools/parse-tool-calls.ts'
 import { ROLE_TOOLS } from './prompts.ts'
 
-const MAX_ITERS = 10
+const MAX_ITERS = 8
+const MAX_READ_CHARS = 6_000
+const MAX_CMD_CHARS = 4_000
 
 export async function runRole(input: {
   projectId: string
@@ -34,20 +36,30 @@ export async function runRole(input: {
   const requireWrite =
     input.requireWrite ?? (input.role === 'alex' && canWrite && !verifyOnly)
 
-  const history = listMessages(input.projectId).map((m) => ({
-    role: m.role,
-    agent_id: m.agent_id,
-    content:
-      typeof JSON.parse(m.content_json) === 'object' &&
-      JSON.parse(m.content_json) &&
-      'text' in (JSON.parse(m.content_json) as object)
-        ? String((JSON.parse(m.content_json) as { text?: string }).text ?? m.content_json)
-        : m.content_json,
-  }))
+  const history = listMessages(input.projectId)
+    .filter((m) => !['version', 'restore', 'revert', 'queued'].includes(m.kind))
+    .map((m) => {
+      let content = m.content_json
+      try {
+        const parsed = JSON.parse(m.content_json) as { text?: unknown }
+        if (parsed && typeof parsed === 'object' && typeof parsed.text === 'string') {
+          content = parsed.text
+        }
+      } catch {
+        // keep raw
+      }
+      return {
+        role: m.role,
+        agent_id: m.agent_id,
+        kind: m.kind,
+        content,
+      }
+    })
+    .filter((m) => m.content.trim().length > 0)
 
-  let messageId = nanoid()
+  const messageId = nanoid()
+  const processSteps: string[] = []
   let lastText = ''
-  const toolResults: string[] = []
   let wroteFiles = false
   let wroteThisTurn = false
 
@@ -61,28 +73,22 @@ export async function runRole(input: {
     },
   })
 
+  // Assemble once; subsequent turns append assistant/tool messages (avoids re-sending
+  // system+history+all tool blobs every iteration — the main token blow-up).
+  const msgs: ChatMessage[] = assembleMessages({
+    role: input.role,
+    userText: input.task,
+    brief: input.brief,
+    history,
+    projectId: input.projectId,
+  })
+
   for (let i = 0; i < MAX_ITERS; i++) {
     if (input.signal?.aborted) throw new Error('aborted')
     wroteThisTurn = false
-    const userText =
-      toolResults.length === 0
-        ? input.task
-        : `${input.task}\n\nTool results so far:\n${toolResults.join('\n\n')}`
-
-    const msgs = assembleMessages({
-      role: input.role,
-      userText,
-      brief: input.brief,
-      history,
-      projectId: input.projectId,
-    })
 
     const forceTool =
-      canWrite &&
-      requireWrite &&
-      !wroteFiles &&
-      i < 4 &&
-      allowedList.length > 0
+      canWrite && requireWrite && !wroteFiles && i < 4 && allowedList.length > 0
 
     const llm = await chatComplete(msgs, {
       signal: input.signal,
@@ -91,33 +97,70 @@ export async function runRole(input: {
     })
 
     lastText = llm.text
-    publish(input.projectId, {
-      type: 'message.delta',
-      message_id: messageId,
-      text: lastText || (llm.toolCalls.length ? `[native tools: ${llm.toolCalls.map((c) => c.name).join(', ')}]` : ''),
-      role: input.role,
-    })
-
     const fenceCalls = parseToolCalls(lastText)
-    const calls = mergeToolCalls(llm.toolCalls, fenceCalls).filter((c) => allowed.has(c.name))
+    const native = llm.nativeToolCalls.filter((n) => allowed.has(n.call.name))
+    const fenceOnly = mergeToolCalls(
+      [],
+      fenceCalls.filter((c) => allowed.has(c.name)),
+    )
+    // Prefer native calls when present; fence calls still needed for text-tool providers.
+    const calls = native.length
+      ? native.map((n) => n.call)
+      : fenceOnly
+
+    const stepVisible =
+      stripToolCallFences(lastText).trim() ||
+      (calls.length
+        ? `→ ${calls.map((c) => c.name + toolArgHint(c)).join(', ')}`
+        : '')
+    if (stepVisible) {
+      processSteps.push(stepVisible)
+      publishProcess(input.projectId, messageId, input.role, processSteps)
+    }
 
     if (calls.length === 0) {
+      // Keep assistant turn in the thread for any follow-up nudges.
+      if (lastText) msgs.push({ role: 'assistant', content: lastText })
+
       if (looksLikeToolAttempt(lastText)) {
-        toolResults.push(
-          'ERROR: tool fence found but could not parse. Use native tools or emit:\n```tool_call\n{"name":"write_file","args":{"path":"app/frontend/src/App.tsx","content":"..."}}\n```\nDo NOT put source only in ```tsx chat fences — it will not save the file unless promoted.',
-        )
+        msgs.push({
+          role: 'user',
+          content:
+            'ERROR: tool fence found but could not parse. Use native tools or emit:\n```tool_call\n{"name":"write_file","args":{"path":"app/frontend/src/App.tsx","content":"..."}}\n```\nDo NOT put source only in ```tsx chat fences — it will not save the file unless promoted.',
+        })
         continue
       }
       if (requireWrite && canWrite && !wroteFiles) {
-        toolResults.push(
-          'ERROR: no file writes yet. Chat/markdown code does not change the workspace by itself. Call write_file (or emit a full ```tsx source block for App.tsx which will be saved). Continue implementing.',
-        )
+        msgs.push({
+          role: 'user',
+          content:
+            'ERROR: no file writes yet. Chat/markdown code does not change the workspace by itself. Call write_file (or emit a full ```tsx source block for App.tsx which will be saved). Continue implementing.',
+        })
         continue
       }
       break
     }
 
-    for (const call of calls) {
+    if (native.length > 0) {
+      msgs.push({
+        role: 'assistant',
+        content: lastText || '',
+        tool_calls: native.map((n) => ({
+          id: n.id,
+          type: 'function' as const,
+          function: {
+            name: n.call.name,
+            arguments: n.rawArguments,
+          },
+        })),
+      })
+    } else {
+      msgs.push({ role: 'assistant', content: lastText || `Calling ${calls.map((c) => c.name).join(', ')}` })
+    }
+
+    const fenceResultLines: string[] = []
+    for (let ci = 0; ci < calls.length; ci++) {
+      const call = calls[ci]!
       const result = await executeTool(call, {
         projectId: input.projectId,
         runId: input.runId,
@@ -129,17 +172,37 @@ export async function runRole(input: {
         wroteFiles = true
         wroteThisTurn = true
       }
-      toolResults.push(
-        `${call.name}: ${result.summary}\n${JSON.stringify(result.data ?? {}).slice(0, 4000)}`,
-      )
+      const formatted = formatToolResultForLlm(call, result)
+      if (native.length > 0) {
+        const id = native[ci]?.id ?? native[0]?.id ?? `tool_${ci}`
+        msgs.push({
+          role: 'tool',
+          tool_call_id: id,
+          name: call.name,
+          content: formatted,
+        })
+      } else {
+        fenceResultLines.push(`${call.name}: ${formatted}`)
+      }
+      processSteps.push(`✔ ${call.name}${toolArgHint(call)} — ${result.summary}`)
+      publishProcess(input.projectId, messageId, input.role, processSteps)
+    }
+
+    if (fenceResultLines.length > 0) {
+      msgs.push({
+        role: 'user',
+        content: `Tool results:\n${fenceResultLines.join('\n\n')}`,
+      })
     }
 
     const saidDone = /\bDONE\b/i.test(stripToolCallFences(lastText))
     if (saidDone) {
       if (requireWrite && canWrite && !wroteFiles) {
-        toolResults.push(
-          'ERROR: you said DONE but no write_file/edit_file succeeded. Call write_file now.',
-        )
+        msgs.push({
+          role: 'user',
+          content:
+            'ERROR: you said DONE but no write_file/edit_file succeeded. Call write_file now.',
+        })
         continue
       }
       break
@@ -147,28 +210,95 @@ export async function runRole(input: {
 
     // After a successful write, allow a short summary turn without forcing more tools
     if (wroteThisTurn && requireWrite) {
-      // keep looping so model can say DONE, but stop forcing tool_choice required next iters
       continue
     }
   }
 
-  const visible = stripToolCallFences(lastText) || lastText || (wroteFiles ? 'DONE' : '')
+  const cleanedSteps = processSteps.map((s) => s.trim()).filter(Boolean)
+  const visible =
+    cleanedSteps.join('\n\n') ||
+    stripToolCallFences(lastText) ||
+    (wroteFiles ? 'DONE' : '')
+
   insertMessage({
     id: messageId,
     project_id: input.projectId,
     role: 'assistant',
     agent_id: input.role,
     kind: 'agent',
-    content: { text: visible },
+    content: { text: visible, process: cleanedSteps },
   })
   publish(input.projectId, {
     type: 'message',
     message_id: messageId,
     agent_id: input.role,
     kind: 'agent',
-    content: { text: visible },
+    content: { text: visible, process: cleanedSteps },
   })
   return { text: visible, messageId, wroteFiles }
+}
+
+function publishProcess(
+  projectId: string,
+  messageId: string,
+  role: RoleId,
+  steps: string[],
+) {
+  publish(projectId, {
+    type: 'message.delta',
+    message_id: messageId,
+    text: steps.join('\n\n'),
+    role,
+  })
+}
+
+function toolArgHint(call: ToolCall): string {
+  const path = call.args?.path
+  return typeof path === 'string' && path ? `(${path})` : ''
+}
+
+/** Compact tool payloads for the LLM — full files must not accumulate across turns. */
+export function formatToolResultForLlm(call: ToolCall, result: ExecResult): string {
+  if (call.name === 'read_file') {
+    const data = result.data as { path?: string; content?: string } | undefined
+    const content = data?.content ?? ''
+    const truncated =
+      content.length > MAX_READ_CHARS
+        ? `${content.slice(0, MAX_READ_CHARS)}\n…[truncated ${content.length - MAX_READ_CHARS} of ${content.length} chars]`
+        : content
+    return JSON.stringify({
+      ok: result.ok,
+      summary: result.summary,
+      path: data?.path,
+      content: truncated,
+    })
+  }
+  if (call.name === 'write_file' || call.name === 'edit_file') {
+    return JSON.stringify({ ok: result.ok, summary: result.summary })
+  }
+  if (
+    call.name === 'run_command' ||
+    call.name === 'build' ||
+    call.name === 'install_deps'
+  ) {
+    const data = result.data as { code?: number; output?: string } | undefined
+    const output = String(data?.output ?? '')
+    return JSON.stringify({
+      ok: result.ok,
+      summary: result.summary,
+      code: data?.code,
+      output: output.length > MAX_CMD_CHARS ? output.slice(-MAX_CMD_CHARS) : output,
+    })
+  }
+  if (call.name === 'list_files') {
+    const files = Array.isArray(result.data) ? result.data.slice(0, 80) : result.data
+    return JSON.stringify({ ok: result.ok, summary: result.summary, files })
+  }
+  return JSON.stringify({
+    ok: result.ok,
+    summary: result.summary,
+    data: result.data ?? null,
+  })
 }
 
 function mergeToolCalls(native: ToolCall[], fenced: ToolCall[]): ToolCall[] {

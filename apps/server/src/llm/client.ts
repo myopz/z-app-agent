@@ -18,11 +18,18 @@ export class LlmError extends Error {
   }
 }
 
+export type AssistantToolCall = {
+  id: string
+  type: 'function'
+  function: { name: string; arguments: string }
+}
+
 export type ChatMessage = {
   role: 'system' | 'user' | 'assistant' | 'tool'
-  content: string
+  content: string | null
   tool_call_id?: string
   name?: string
+  tool_calls?: AssistantToolCall[]
 }
 
 export type LlmChatOptions = {
@@ -35,11 +42,25 @@ export type LlmChatOptions = {
   toolChoice?: 'auto' | 'required' | 'none'
 }
 
+export type NativeToolCall = {
+  id: string
+  call: ToolCall
+  rawArguments: string
+}
+
+export type LlmUsage = {
+  prompt_tokens?: number
+  completion_tokens?: number
+  total_tokens?: number
+}
+
 export type ChatCompleteResult = {
   text: string
   toolCalls: ToolCall[]
+  nativeToolCalls: NativeToolCall[]
   /** Provider returned native tool_calls */
   usedNativeTools: boolean
+  usage?: LlmUsage
 }
 
 function chatCompletionsUrl() {
@@ -72,6 +93,27 @@ export function getLlmConfigPublic() {
     hasApiKey: Boolean(LLM_API_KEY),
     timeoutMs: LLM_TIMEOUT_MS,
   }
+}
+
+function serializeMessages(messages: ChatMessage[]) {
+  return messages.map((m) => {
+    if (m.role === 'tool') {
+      return {
+        role: 'tool' as const,
+        content: m.content ?? '',
+        tool_call_id: m.tool_call_id ?? 'tool',
+        ...(m.name ? { name: m.name } : {}),
+      }
+    }
+    if (m.role === 'assistant' && m.tool_calls?.length) {
+      return {
+        role: 'assistant' as const,
+        content: m.content,
+        tool_calls: m.tool_calls,
+      }
+    }
+    return { role: m.role, content: m.content ?? '' }
+  })
 }
 
 export async function chatComplete(
@@ -118,17 +160,7 @@ async function chatCompleteOnce(
     const useTools = !disableTools && Boolean(opts?.tools?.length)
     const body: Record<string, unknown> = {
       model: resolveModel(opts?.model),
-      messages: messages.map((m) => {
-        if (m.role === 'tool') {
-          return {
-            role: 'tool',
-            content: m.content,
-            tool_call_id: m.tool_call_id ?? 'tool',
-            ...(m.name ? { name: m.name } : {}),
-          }
-        }
-        return { role: m.role, content: m.content }
-      }),
+      messages: serializeMessages(messages),
       stream: false,
       temperature: opts?.temperature ?? 0.2,
     }
@@ -148,6 +180,7 @@ async function chatCompleteOnce(
       throw new LlmError(res.status, text || res.statusText)
     }
     const json = (await res.json()) as {
+      usage?: LlmUsage
       choices?: Array<{
         message?: {
           content?: string | Array<{ type?: string; text?: string }> | null
@@ -168,14 +201,20 @@ async function chatCompleteOnce(
           ? raw.map((p) => (typeof p === 'string' ? p : p.text ?? '')).join('')
           : ''
 
+    const nativeToolCalls: NativeToolCall[] = []
     const toolCalls: ToolCall[] = []
+    let toolIdx = 0
     for (const tc of message?.tool_calls ?? []) {
       const name = tc.function?.name
       const argsRaw = tc.function?.arguments ?? '{}'
       if (!name) continue
       try {
         const args = JSON.parse(argsRaw) as Record<string, unknown>
-        toolCalls.push(ToolCallSchema.parse({ name, args }))
+        const call = ToolCallSchema.parse({ name, args })
+        const id = tc.id?.trim() || `call_${toolIdx}`
+        toolIdx++
+        nativeToolCalls.push({ id, call, rawArguments: argsRaw })
+        toolCalls.push(call)
       } catch {
         // skip malformed native tool call
       }
@@ -185,10 +224,27 @@ async function chatCompleteOnce(
       throw new LlmError(502, 'empty_llm_content')
     }
 
+    const usage = json.usage
+    if (usage?.total_tokens != null || usage?.prompt_tokens != null) {
+      console.info(
+        '[llm.usage]',
+        JSON.stringify({
+          model: resolveModel(opts?.model),
+          prompt_tokens: usage.prompt_tokens ?? null,
+          completion_tokens: usage.completion_tokens ?? null,
+          total_tokens: usage.total_tokens ?? null,
+          messages: messages.length,
+          tools: useTools,
+        }),
+      )
+    }
+
     return {
       text: text || '',
       toolCalls,
+      nativeToolCalls,
       usedNativeTools: toolCalls.length > 0,
+      usage,
     }
   } catch (err) {
     if (err instanceof LlmError) throw err
@@ -208,7 +264,7 @@ export async function* chatStream(
 ): AsyncGenerator<string> {
   const body = {
     model: resolveModel(opts?.model),
-    messages,
+    messages: serializeMessages(messages),
     stream: true,
     temperature: opts?.temperature ?? 0.2,
   }

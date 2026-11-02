@@ -3,14 +3,16 @@ import { listFileTree } from '../workspace/scaffold.ts'
 import { readAtomsDoc } from '../memory/atoms-docs.ts'
 import { ROLE_SYSTEM } from '../roles/prompts.ts'
 
-const MAX_HISTORY_CHARS = 12_000
-const MAX_TREE = 80
+/** Keep history lean — long agent dumps were a major token amplifier. */
+const MAX_HISTORY_CHARS = 6_000
+const MAX_MSG_CHARS = 1_200
+const MAX_TREE = 60
 
 export function assembleMessages(input: {
   role: RoleId
   userText: string
   brief?: Brief | null
-  history: Array<{ role: string; agent_id?: string | null; content: string }>
+  history: Array<{ role: string; agent_id?: string | null; content: string; kind?: string }>
   projectId: string
   extraSystem?: string
 }): Array<{ role: 'system' | 'user' | 'assistant'; content: string }> {
@@ -20,15 +22,15 @@ export function assembleMessages(input: {
     .map((f) => `${f.type[0]} ${f.path}`)
     .join('\n')
   const atoms = [
-    readAtomsDoc(input.projectId, 'ATOMS.md').slice(0, 2000),
-    readAtomsDoc(input.projectId, 'PROGRESS.md').slice(0, 1500),
-    readAtomsDoc(input.projectId, 'ARCHITECTURE.md').slice(0, 1500),
+    readAtomsDoc(input.projectId, 'ATOMS.md').slice(0, 1200),
+    readAtomsDoc(input.projectId, 'PROGRESS.md').slice(0, 800),
+    readAtomsDoc(input.projectId, 'ARCHITECTURE.md').slice(0, 1000),
   ]
     .filter(Boolean)
     .join('\n\n---\n\n')
 
   const briefBlock = input.brief
-    ? `BRIEF (authoritative):\n${JSON.stringify(input.brief, null, 2)}`
+    ? `BRIEF (authoritative):\n${JSON.stringify(input.brief)}`
     : ''
 
   const system = [
@@ -52,11 +54,20 @@ export function assembleMessages(input: {
   const historyMsgs: Array<{ role: 'user' | 'assistant'; content: string }> = []
   let budget = MAX_HISTORY_CHARS
   for (const h of [...input.history].reverse()) {
-    const content = h.content.slice(0, 2000)
+    const raw = h.content.trim()
+    if (!raw) continue
+    // Prefer a short head for long process logs (keep last / summary side).
+    const content =
+      raw.length <= MAX_MSG_CHARS
+        ? raw
+        : `${raw.slice(0, MAX_MSG_CHARS / 2)}\n…\n${raw.slice(-MAX_MSG_CHARS / 2)}`
     if (budget <= 0) break
     budget -= content.length
     const role = h.role === 'user' ? 'user' : 'assistant'
-    historyMsgs.unshift({ role, content: h.agent_id ? `[${h.agent_id}] ${content}` : content })
+    historyMsgs.unshift({
+      role,
+      content: h.agent_id ? `[${h.agent_id}] ${content}` : content,
+    })
   }
 
   return [
