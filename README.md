@@ -26,7 +26,8 @@ LLM 在仓库根目录 `.env` 配置（`apps/server` 启动时自动加载）：
 | `LLM_API_KEY` | 空 | Bearer Key；免费聚合通常可不填 |
 | `LLM_TIMEOUT_MS` | `90000` | 请求超时 |
 | `LLM_EXTRA_HEADERS` | 空 | JSON 额外请求头（如 OpenRouter） |
-| `PORT` | `8788` | 本服务端口 |
+| `PORT` | `39000` | 本服务端口 |
+| `PUBLIC_BASE_PATH` | `/zapp` | 公网/本地 Web 路径前缀（Vite + Router + API） |
 | `MAX_FIX_ATTEMPTS` | `3` | 构建修复上限 |
 
 兼容别名：`OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL`。  
@@ -36,11 +37,24 @@ LLM 在仓库根目录 `.env` 配置（`apps/server` 启动时自动加载）：
 
 ## 开发
 
+前台（终端占用）：
+
 ```bash
 pnpm dev
-# web  http://127.0.0.1:5173
-# api  http://127.0.0.1:8788/healthz
-# llm  http://127.0.0.1:8788/api/llm/status
+# web  http://127.0.0.1:39001/zapp/
+# api  http://127.0.0.1:39000/healthz
+# llm  http://127.0.0.1:39000/api/llm/status
+# 公网 https://mac.ittoolplus.cn/zapp/（mac_conf/proxy/proxy-zapp.conf）
+```
+
+后台（`nohup`，pid/日志在 `.run/`）：
+
+```bash
+pnpm start      # 或 ./scripts/serve.sh start
+pnpm status
+pnpm logs       # Ctrl+C 退出 tail，不关服务
+pnpm restart
+pnpm stop
 ```
 
 演示路径：首页新建项目 → 输入需求（Team/Build 或 Goal）→ 观察 Mike/Emma/Bob/Alex → Preview 面板 Load preview。

@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import net from 'node:net'
 import { publish } from '../events/bus.ts'
 import { updateProjectPort } from '../db/repos.ts'
-import { PREVIEW_PORT_BASE } from '../paths.ts'
+import { PREVIEW_PORT_BASE, PUBLIC_BASE_PATH } from '../paths.ts'
 import { frontendRoot } from '../workspace/paths.ts'
 
 type Slot = {
@@ -42,8 +42,9 @@ function freePort(port: number) {
   usedPorts.delete(port)
 }
 
-function previewBase(projectId: string) {
-  return `/preview/${projectId}/`
+/** Browser + preview-Vite base, e.g. `/zapp/preview/:id/`（含 PUBLIC_BASE_PATH）. */
+export function previewBase(projectId: string) {
+  return `${PUBLIC_BASE_PATH}/preview/${projectId}/`
 }
 
 function isSlotAlive(slot: Slot | undefined): boolean {

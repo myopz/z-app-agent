@@ -8,6 +8,7 @@ workspaces/
 data/
 *.db
 *.db-journal
+.run/
 apps/web/dist/
 apps/server/dist/
 .turbo/

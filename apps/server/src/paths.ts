@@ -13,7 +13,16 @@ export const DB_PATH = path.resolve(DATA_ROOT, 'z-app-agent.db')
 export const SNAPSHOTS_ROOT = path.resolve(DATA_ROOT, 'snapshots')
 export const TEMPLATE_ROOT = path.resolve(SERVER_ROOT, 'templates/vite-react-ts')
 
-export const SERVER_PORT = Number(process.env.PORT ?? 8788)
+export const SERVER_PORT = Number(process.env.PORT ?? 39000)
+
+/** Public URL prefix (`` or `/zapp`). Must match web Vite `PUBLIC_BASE_PATH`. */
+export function normalizePublicBasePath(raw: string | undefined): string {
+  const t = (raw ?? '/zapp').trim()
+  if (!t || t === '/') return ''
+  return `/${t.replace(/^\/+|\/+$/g, '')}`
+}
+
+export const PUBLIC_BASE_PATH = normalizePublicBasePath(process.env.PUBLIC_BASE_PATH)
 
 /**
  * OpenAI-compatible API base, including `/v1` (or provider equivalent).

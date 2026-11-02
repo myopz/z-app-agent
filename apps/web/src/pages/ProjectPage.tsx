@@ -28,6 +28,7 @@ import {
   type Message,
   type Project,
 } from '../lib/api'
+import { withBase } from '../lib/base'
 import { invalidateMessages, cacheMessages, readCachedMessages } from '../lib/idb/messages'
 import { appendLog, clearLogs, readLogs } from '../lib/idb/logs'
 import { loadDraft, saveDraft, touchRecent } from '../lib/idb/ui'
@@ -168,7 +169,7 @@ export function ProjectPage() {
   }, [id, hydrateFromServer])
 
   useEffect(() => {
-    const es = new EventSource(`/api/projects/${id}/events`)
+    const es = new EventSource(withBase(`/api/projects/${id}/events`))
     es.onmessage = (ev) => {
       try {
         const event = JSON.parse(ev.data) as ServerEvent
@@ -321,7 +322,8 @@ export function ProjectPage() {
         setPhase(event.phase)
         break
       case 'preview.ready': {
-        const bust = `${event.url}${event.url.includes('?') ? '&' : '?'}t=${Date.now()}`
+        const url = withBase(event.url)
+        const bust = `${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`
         setPreviewUrl(bust)
         setPreviewKey((k) => k + 1)
         setPreviewLoading(false)

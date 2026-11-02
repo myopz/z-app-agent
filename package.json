@@ -5,6 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "pnpm -r --parallel --filter @z-app-agent/server --filter @z-app-agent/web run dev",
+    "start": "./scripts/serve.sh start",
+    "stop": "./scripts/serve.sh stop",
+    "restart": "./scripts/serve.sh restart",
+    "status": "./scripts/serve.sh status",
+    "logs": "./scripts/serve.sh logs",
     "build": "pnpm -r run build",
     "typecheck": "pnpm -r run typecheck",
     "test": "pnpm -r --filter @z-app-agent/shared --filter @z-app-agent/server run test"

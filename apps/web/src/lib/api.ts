@@ -1,3 +1,5 @@
+import { withBase } from './base'
+
 export type Project = {
   id: string
   title: string
@@ -27,8 +29,12 @@ async function json<T>(res: Response | Promise<Response>): Promise<T> {
   return resolved.json() as Promise<T>
 }
 
+function api(path: string) {
+  return withBase(path)
+}
+
 export function listProjects() {
-  return json<{ projects: Project[] }>(fetch('/api/projects')).then((r) => r.projects)
+  return json<{ projects: Project[] }>(fetch(api('/api/projects'))).then((r) => r.projects)
 }
 
 export function createProject(body: {
@@ -37,7 +43,7 @@ export function createProject(body: {
   collab_mode?: string
 }) {
   return json<{ project: Project }>(
-    fetch('/api/projects', {
+    fetch(api('/api/projects'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -47,7 +53,7 @@ export function createProject(body: {
 
 export function deleteProject(id: string) {
   return json<{ ok: boolean }>(
-    fetch(`/api/projects/${id}`, { method: 'DELETE' }),
+    fetch(api(`/api/projects/${id}`), { method: 'DELETE' }),
   )
 }
 
@@ -55,18 +61,18 @@ export function getProject(id: string) {
   return json<{
     project: Project
     checkpoint: { payload: unknown; updated_at: string } | null
-  }>(fetch(`/api/projects/${id}`))
+  }>(fetch(api(`/api/projects/${id}`)))
 }
 
 export function listMessages(id: string) {
-  return json<{ messages: Message[] }>(fetch(`/api/projects/${id}/messages`)).then(
+  return json<{ messages: Message[] }>(fetch(api(`/api/projects/${id}/messages`))).then(
     (r) => r.messages,
   )
 }
 
 export function listFiles(id: string) {
   return json<{ files: Array<{ path: string; type: 'file' | 'dir' }> }>(
-    fetch(`/api/projects/${id}/files`),
+    fetch(api(`/api/projects/${id}/files`)),
   ).then((r) => r.files)
 }
 
@@ -76,14 +82,14 @@ export function readFile(id: string, path: string) {
     .map((p) => encodeURIComponent(p))
     .join('/')
   return json<{ path: string; content: string }>(
-    fetch(`/api/projects/${id}/files/${enc}`),
+    fetch(api(`/api/projects/${id}/files/${enc}`)),
   )
 }
 
 export function listVersions(id: string) {
   return json<{
     versions: Array<{ id: string; label: string; created_at: string }>
-  }>(fetch(`/api/projects/${id}/versions`)).then((r) => r.versions)
+  }>(fetch(api(`/api/projects/${id}/versions`))).then((r) => r.versions)
 }
 
 export function sendMessage(
@@ -96,7 +102,7 @@ export function sendMessage(
   },
 ) {
   return json<{ ok: boolean }>(
-    fetch(`/api/projects/${id}/messages`, {
+    fetch(api(`/api/projects/${id}/messages`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -105,11 +111,11 @@ export function sendMessage(
 }
 
 export function approvePlan(id: string, cardId: string) {
-  return fetch(`/api/projects/${id}/plan/${cardId}/approve`, { method: 'POST' })
+  return fetch(api(`/api/projects/${id}/plan/${cardId}/approve`), { method: 'POST' })
 }
 
 export function declinePlan(id: string, cardId: string, reason?: string) {
-  return fetch(`/api/projects/${id}/plan/${cardId}/decline`, {
+  return fetch(api(`/api/projects/${id}/plan/${cardId}/decline`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ reason }),
@@ -117,7 +123,7 @@ export function declinePlan(id: string, cardId: string, reason?: string) {
 }
 
 export function stopRun(id: string) {
-  return fetch(`/api/projects/${id}/stop`, {
+  return fetch(api(`/api/projects/${id}/stop`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ clearQueue: false }),
@@ -126,7 +132,7 @@ export function stopRun(id: string) {
 
 export function resumeRun(id: string, opts?: { force?: boolean }) {
   return json<{ ok: boolean; started?: boolean }>(
-    fetch(`/api/projects/${id}/resume`, {
+    fetch(api(`/api/projects/${id}/resume`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ force: Boolean(opts?.force) }),
@@ -135,23 +141,23 @@ export function resumeRun(id: string, opts?: { force?: boolean }) {
 }
 
 export function restoreVersion(id: string, vid: string) {
-  return fetch(`/api/projects/${id}/versions/${vid}/restore`, { method: 'POST' })
+  return fetch(api(`/api/projects/${id}/versions/${vid}/restore`), { method: 'POST' })
 }
 
 export function revertMessage(id: string, mid: string) {
-  return fetch(`/api/projects/${id}/messages/${mid}/revert`, { method: 'POST' })
+  return fetch(api(`/api/projects/${id}/messages/${mid}/revert`), { method: 'POST' })
 }
 
 export function resolveIssue(id: string, issueId: string) {
-  return fetch(`/api/projects/${id}/issues/${issueId}/resolve`, { method: 'POST' })
+  return fetch(api(`/api/projects/${id}/issues/${issueId}/resolve`), { method: 'POST' })
 }
 
 export function startPreview(id: string, opts?: { force?: boolean }) {
   return json<{ url: string; port: number }>(
-    fetch(`/api/projects/${id}/preview`, {
+    fetch(api(`/api/projects/${id}/preview`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ force: Boolean(opts?.force) }),
     }),
-  )
+  ).then((r) => ({ ...r, url: withBase(r.url) }))
 }

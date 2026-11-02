@@ -4,7 +4,7 @@ import { cors } from 'hono/cors'
 import { getDb } from './db/index.ts'
 import { listOpenRuns, getCheckpoint, updateRun, updateIssueStatus } from './db/repos.ts'
 import { publish } from './events/bus.ts'
-import { SERVER_PORT } from './paths.ts'
+import { PUBLIC_BASE_PATH, SERVER_PORT } from './paths.ts'
 import { ensurePreview, getPreviewPort, stopPreview } from './preview/manager.ts'
 import { projectsRouter } from './routes/projects.ts'
 
@@ -49,11 +49,15 @@ async function proxyPreview(c: {
     }
   }
 
-  const prefix = `/preview/${id}`
-  let suffix = c.req.path.startsWith(prefix) ? c.req.path.slice(prefix.length) : '/'
+  // 经 Vite 反代后 path 为 /preview/:id/...；上游 preview Vite 的 base 含 PUBLIC_BASE_PATH
+  const routePrefix = `/preview/${id}`
+  const upstreamPrefix = `${PUBLIC_BASE_PATH}/preview/${id}`
+  let suffix = c.req.path.startsWith(routePrefix)
+    ? c.req.path.slice(routePrefix.length)
+    : '/'
   if (!suffix) suffix = '/'
   const qs = c.req.url.includes('?') ? '?' + c.req.url.split('?')[1] : ''
-  const target = `http://127.0.0.1:${port}${prefix}${suffix}${qs}`
+  const target = `http://127.0.0.1:${port}${upstreamPrefix}${suffix}${qs}`
   const headers = new Headers(c.req.raw.headers)
   headers.delete('host')
 
@@ -73,7 +77,7 @@ async function proxyPreview(c: {
     stopPreview(id)
     try {
       const restarted = await ensurePreview(id)
-      const retryTarget = `http://127.0.0.1:${restarted.port}${prefix}${suffix}${qs}`
+      const retryTarget = `http://127.0.0.1:${restarted.port}${upstreamPrefix}${suffix}${qs}`
       const res = await fetch(retryTarget, {
         method: c.req.method,
         headers,
@@ -93,6 +97,7 @@ async function proxyPreview(c: {
 }
 
 app.all('/preview/:id/*', (c) => proxyPreview(c))
+// 相对服务端路由；经 Vite 时 Location 会再补上 PUBLIC_BASE_PATH
 app.all('/preview/:id', (c) => c.redirect(`/preview/${c.req.param('id')}/`))
 
 for (const run of listOpenRuns()) {
