@@ -1,0 +1,13 @@
+{
+  "json.schemaDownload.enable": true,
+  "json.schemas": [
+    {
+      "fileMatch": ["tsconfig.json", "tsconfig.*.json"],
+      "schema": {
+        "allowComments": true,
+        "allowTrailingCommas": true,
+        "type": "object"
+      }
+    }
+  ]
+}

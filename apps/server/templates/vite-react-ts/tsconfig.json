@@ -11,8 +11,7 @@
     "moduleDetection": "force",
     "noEmit": true,
     "jsx": "react-jsx",
-    "strict": true,
-    "types": ["vite/client"]
+    "strict": true
   },
   "include": ["src"]
 }

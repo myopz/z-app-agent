@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Scaffold template is copied before npm install; no local node_modules here for IDE resolution.
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'

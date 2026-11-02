@@ -85,3 +85,4 @@ pnpm test
 - Key 只放在服务端 `.env`，前端不持有。
 - Sarah/Adrian 为 stub；Docker 沙箱与发布能力不在 P0（见 status 路线图）。
 - 生成 UI 须 Tailwind 可视化；裸控件会被 `apps/server/src/quality/app-ui.ts` 门禁打回。
+- 脚手架为 Tailwind v4：`index.css` 使用 `@import 'tailwindcss'`（禁止改成 v3 的 `@tailwind base/components/utilities`）。

@@ -27,6 +27,86 @@ export function isScaffoldApp(projectId: string): boolean {
 }
 
 /**
+ * Find the index of the real `>` that closes a JSX/HTML opening tag,
+ * skipping string literals and nested `{...}` expressions (so `() =>` does not truncate).
+ */
+export function findJsxOpeningTagEnd(source: string, from: number): number {
+  let i = from
+  let braceDepth = 0
+  let quote: '"' | "'" | '`' | null = null
+
+  while (i < source.length) {
+    const ch = source[i]!
+
+    if (quote) {
+      if (ch === '\\' && i + 1 < source.length && quote !== '`') {
+        i += 2
+        continue
+      }
+      if (quote === '`' && ch === '$' && source[i + 1] === '{') {
+        braceDepth++
+        quote = null
+        i += 2
+        continue
+      }
+      if (ch === quote) quote = null
+      i++
+      continue
+    }
+
+    if (braceDepth > 0) {
+      if (ch === '"' || ch === "'" || ch === '`') {
+        quote = ch
+        i++
+        continue
+      }
+      if (ch === '{') braceDepth++
+      else if (ch === '}') braceDepth--
+      i++
+      continue
+    }
+
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch
+      i++
+      continue
+    }
+    if (ch === '{') {
+      braceDepth++
+      i++
+      continue
+    }
+    if (ch === '>') return i
+    i++
+  }
+
+  return -1
+}
+
+/** Collect full opening tags for the given element names (case-insensitive). */
+export function collectJsxOpeningTags(source: string, tagNames: readonly string[]): string[] {
+  if (!tagNames.length) return []
+  const pattern = new RegExp(`<(?:${tagNames.join('|')})\\b`, 'gi')
+  const tags: string[] = []
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(source)) !== null) {
+    const start = match.index
+    const end = findJsxOpeningTagEnd(source, start + match[0].length)
+    if (end < 0) {
+      pattern.lastIndex = start + match[0].length
+      continue
+    }
+    tags.push(source.slice(start, end + 1))
+    pattern.lastIndex = end + 1
+  }
+  return tags
+}
+
+function countBareControls(tags: string[]): number {
+  return tags.filter((tag) => !/\bclassName\s*=/.test(tag)).length
+}
+
+/**
  * Invariant: product UI must be Tailwind-styled, not browser-default bare markup.
  * Single authority for "has a real UI page" — used after Alex and in verify.
  */
@@ -52,23 +132,54 @@ export function visualUiGaps(source: string): string[] {
     )
   }
 
-  const buttons = source.match(/<button\b[^>]*>/gi) ?? []
+  const buttons = collectJsxOpeningTags(source, ['button'])
   if (buttons.length > 0) {
-    const bare = buttons.filter((tag) => !/\bclassName\s*=/.test(tag))
-    if (bare.length > 0) {
-      gaps.push(`${bare.length}/${buttons.length} <button> have no className (bare controls)`)
+    const bare = countBareControls(buttons)
+    if (bare > 0) {
+      gaps.push(`${bare}/${buttons.length} <button> have no className (bare controls)`)
     }
   }
 
-  const inputs = source.match(/<(?:input|select|textarea)\b[^>]*>/gi) ?? []
+  const inputs = collectJsxOpeningTags(source, ['input', 'select', 'textarea'])
   if (inputs.length > 0) {
-    const bare = inputs.filter((tag) => !/\bclassName\s*=/.test(tag))
-    if (bare.length > 0) {
-      gaps.push(`${bare.length}/${inputs.length} form controls have no className`)
+    const bare = countBareControls(inputs)
+    if (bare > 0) {
+      gaps.push(`${bare}/${inputs.length} form controls have no className`)
     }
   }
 
   return gaps
+}
+
+/** Tailwind v4 + @tailwindcss/vite must use `@import 'tailwindcss'`, not v3 `@tailwind` directives. */
+export function tailwindV4CssGaps(projectId: string): string[] {
+  const frontend = path.join(workspaceRoot(projectId), 'app/frontend')
+  const pkgPath = path.join(frontend, 'package.json')
+  const cssPath = path.join(frontend, 'src/index.css')
+  if (!fs.existsSync(pkgPath) || !fs.existsSync(cssPath)) return []
+
+  let pkgText: string
+  try {
+    pkgText = fs.readFileSync(pkgPath, 'utf8')
+  } catch {
+    return []
+  }
+
+  const usesVitePlugin = pkgText.includes('@tailwindcss/vite')
+  const usesTw4 =
+    usesVitePlugin ||
+    /"tailwindcss"\s*:\s*"[^"]*4(?:\.\d+)*[^"]*"/.test(pkgText)
+  if (!usesTw4) return []
+
+  const css = fs.readFileSync(cssPath, 'utf8')
+  const hasImport = /@import\s+['"]tailwindcss['"]/.test(css)
+  const hasV3Directives = /@tailwind\s+(?:base|components|utilities)\b/.test(css)
+  if (hasV3Directives && !hasImport) {
+    return [
+      "index.css uses Tailwind v3 @tailwind directives but project is Tailwind v4 (need @import 'tailwindcss')",
+    ]
+  }
+  return []
 }
 
 /** Deterministic gaps the LLM often lies about in verify fences. */
@@ -81,6 +192,7 @@ export function localAcceptanceGaps(projectId: string, brief: Brief | null): str
   }
 
   gaps.push(...visualUiGaps(text))
+  gaps.push(...tailwindV4CssGaps(projectId))
 
   const hay = `${brief?.goal ?? ''}\n${(brief?.acceptance ?? []).join('\n')}\n${(brief?.sections ?? []).join('\n')}`.toLowerCase()
   if (/scientific|科学|trig|sin\b|cos\b|tan\b|log\b|sqrt|exponent/.test(hay)) {

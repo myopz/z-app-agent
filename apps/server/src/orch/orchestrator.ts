@@ -482,7 +482,8 @@ function countFrontendPatches(messageId: string): number {
   return listPatchesForMessage(messageId).filter((p) => p.path.includes('app/frontend')).length
 }
 
-const UI_QUALITY_RULE = 'UI must use Tailwind className (no bare unstyled controls)'
+const UI_QUALITY_RULE =
+  "UI must use Tailwind className (no bare unstyled controls); keep index.css as @import 'tailwindcss' (Tailwind v4, not @tailwind directives)"
 const UI_ACCEPTANCE = 'Preview shows a Tailwind-styled UI (not bare browser-default markup)'
 
 /** Brief always carries the visual-UI invariant — independent of what Mike emitted. */
@@ -547,6 +548,7 @@ Requirements:
 - Satisfy BRIEF acceptance/goal controls
 - Every interactive control (<button>/<input>/…) MUST have className
 - Use layout utilities (min-h-screen/flex/grid/padding/bg/…) — bare unstyled markup is REJECTED
+- Do NOT rewrite app/frontend/src/index.css to @tailwind base/components/utilities — keep @import 'tailwindcss' (Tailwind v4)
 Do not only describe the code.`,
       signal,
       requireWrite: true,
@@ -879,7 +881,8 @@ Error / verify logs:
 ${logs.slice(0, 6000)}
 
 Steps: read_file the failing path, then write_file a complete corrected file.
-If the failure mentions Tailwind/className/bare controls, restyle the full App.tsx with a finished visual layout.`,
+If the failure mentions Tailwind/className/bare controls, restyle the full App.tsx with a finished visual layout.
+If the failure mentions index.css / @tailwind / Tailwind v4, restore @import 'tailwindcss' — never use v3 @tailwind directives.`,
   })
 
   // Stay in resolving until rebuild proves success

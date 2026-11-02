@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { localAcceptanceGaps, visualUiGaps } from './app-ui.ts'
+import {
+  collectJsxOpeningTags,
+  localAcceptanceGaps,
+  visualUiGaps,
+} from './app-ui.ts'
 
 const BARE_COUNTER = `import React, { useState } from 'react';
 const Counter: React.FC = () => {
@@ -33,6 +37,29 @@ export default function App() {
   )
 }`
 
+/** Session 7bK8Puvf6_ failure mode: onClick arrow before className. */
+const STYLED_ARROW_ONCLICK_BEFORE_CLASS = `export default function App() {
+  return (
+    <main className="min-h-screen flex p-8 bg-slate-900 text-slate-100">
+      <button
+        type="button"
+        onClick={() => console.log('go')}
+        className="h-12 rounded-xl bg-cyan-500 text-white"
+      >
+        Go
+      </button>
+      <button type="button" onClick={() => setX(1)} className="px-4 py-2 bg-slate-800 rounded-lg">
+        Ok
+      </button>
+      <section className="grid grid-cols-4 gap-2 rounded-3xl p-3">
+        <button type="button" aria-label="up" onClick={() => move('up')} className="h-11 bg-slate-700 rounded-xl">
+          Up
+        </button>
+      </section>
+    </main>
+  )
+}`
+
 describe('visualUiGaps', () => {
   it('rejects bare counter without Tailwind', () => {
     const gaps = visualUiGaps(BARE_COUNTER)
@@ -54,6 +81,34 @@ describe('visualUiGaps', () => {
     }`
     const gaps = visualUiGaps(mixed)
     assert.ok(gaps.some((g) => /button/i.test(g)))
+  })
+
+  it('accepts styled buttons when onClick arrow precedes className', () => {
+    assert.deepEqual(visualUiGaps(STYLED_ARROW_ONCLICK_BEFORE_CLASS), [])
+  })
+
+  it('still rejects truly bare button with arrow onClick', () => {
+    const bareArrow = `export default function App() {
+      return (
+        <main className="min-h-screen flex p-8 bg-slate-900">
+          <div className="grid gap-2">
+            <button type="button" onClick={() => doThing()}>ok</button>
+          </div>
+        </main>
+      )
+    }`
+    const gaps = visualUiGaps(bareArrow)
+    assert.ok(gaps.some((g) => /1\/1 <button> have no className/i.test(g)))
+  })
+
+  it('collectJsxOpeningTags keeps className after arrow onClick', () => {
+    const tags = collectJsxOpeningTags(
+      `<button type="button" onClick={() => x()} className="h-12 bg-cyan-500">Go</button>`,
+      ['button'],
+    )
+    assert.equal(tags.length, 1)
+    assert.match(tags[0]!, /\bclassName\s*=/)
+    assert.match(tags[0]!, /onClick=\{\(\) =>/)
   })
 })
 

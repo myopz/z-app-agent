@@ -40,6 +40,8 @@ Rules:
 - Prefer typed React (no implicit any; type DOM event handlers)
 - UI under app/frontend/src/** (Vite+React+TS+Tailwind); memory under .atoms/**
 - Visual UI is required: use Tailwind className for layout, spacing, typography, and controls. Do NOT ship bare unstyled <div>/<h1>/<button> with no classes — the preview must look like a finished small product, not plain browser defaults.
+- Tailwind v4 only: keep app/frontend/src/index.css as \`@import 'tailwindcss';\` (plus optional html/body rules). NEVER rewrite it to v3 \`@tailwind base/components/utilities\` — those break @tailwindcss/vite and strip utilities.
+- Prefer editing App.tsx className for visuals; do not replace the Tailwind entry CSS unless BRIEF explicitly requires CSS changes, and then preserve the \`@import 'tailwindcss';\` line.
 - Keep a coherent full-viewport composition (background + centered content + clear primary actions)
 - install_deps/build/preview are available but the orchestrator also runs them after you finish
 Keep changes minimal and runnable.`,
