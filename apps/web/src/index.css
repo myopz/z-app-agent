@@ -1,0 +1,30 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  color-scheme: light;
+  font-family: 'Segoe UI', ui-sans-serif, system-ui, sans-serif;
+  --app-bg: #f4f7fb;
+  --app-fg: #0f172a;
+}
+
+.dark {
+  color-scheme: dark;
+  --app-bg: #0b1220;
+  --app-fg: #e5eefc;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+  height: 100%;
+  background: var(--app-bg);
+  color: var(--app-fg);
+}
+
+* {
+  box-sizing: border-box;
+}

@@ -1,0 +1,19 @@
+{
+  "name": "z-app-agent",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter @z-app-agent/server --filter @z-app-agent/web run dev",
+    "build": "pnpm -r run build",
+    "typecheck": "pnpm -r run typecheck",
+    "test": "pnpm -r --filter @z-app-agent/shared --filter @z-app-agent/server run test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@10.11.1",
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  }
+}
