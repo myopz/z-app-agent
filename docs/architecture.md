@@ -1,6 +1,6 @@
 # z-app-agent 架构设计
 
-> 阶段：第 1.1（架构设计）。配套需求：[requirements.md](./requirements.md)  
+> 阶段：第 1.1（架构设计）。配套需求：[requirements.md](./requirements.md) · 落地进度：[status.md](./status.md)  
 > 参考：`.ref/atoms/docs/atoms-dev-architecture.md`（采纳其不变量与 SOP，不复刻闭源实现）
 
 ## 1. 系统概览

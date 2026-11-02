@@ -1,6 +1,6 @@
 # z-app-agent 需求规格
 
-> 阶段：第 1.1（需求梳理）。实现见后续 task02+。  
+> 阶段：第 1.1（需求梳理）。实现进度见 **[status.md](./status.md)**。  
 > 上游参考：`.ref/atoms/docs/atoms-dev-architecture.md`、`.ref/atoms/docs/research-atoms-dev.md`  
 > 任务来源：`.tmp/step1/task01.md`
 
