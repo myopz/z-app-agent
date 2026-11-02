@@ -29,6 +29,7 @@ import {
   type Project,
 } from '../lib/api'
 import { withBase } from '../lib/base'
+import { withCacheBust } from '../lib/cache'
 import { invalidateMessages, cacheMessages, readCachedMessages } from '../lib/idb/messages'
 import { appendLog, clearLogs, readLogs } from '../lib/idb/logs'
 import { loadDraft, saveDraft, touchRecent } from '../lib/idb/ui'
@@ -365,9 +366,7 @@ export function ProjectPage() {
         setPhase(event.phase)
         break
       case 'preview.ready': {
-        const url = withBase(event.url)
-        const bust = `${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`
-        setPreviewUrl(bust)
+        setPreviewUrl(withCacheBust(withBase(event.url)))
         setPreviewKey((k) => k + 1)
         setPreviewLoading(false)
         setRightTab('app')
@@ -457,8 +456,7 @@ export function ProjectPage() {
       setPreviewLoading(true)
       try {
         const r = await startPreview(id, { force: opts?.force })
-        const bust = `${r.url}${r.url.includes('?') ? '&' : '?'}t=${Date.now()}`
-        setPreviewUrl(bust)
+        setPreviewUrl(withCacheBust(r.url))
         setPreviewKey((k) => k + 1)
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))

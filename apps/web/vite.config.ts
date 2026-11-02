@@ -68,6 +68,34 @@ export default defineConfig({
     {
       name: 'redirect-root-to-base',
       configureServer(server) {
+        // Wrap early so later Vite setHeader('Cache-Control', 'no-cache') cannot stick.
+        server.middlewares.use((req, res, next) => {
+          const pathOnly = (req.url ?? '').split('?')[0] ?? ''
+          const isHtmlEntry =
+            pathOnly === '/' ||
+            pathOnly === publicBase ||
+            pathOnly === `${publicBase}/` ||
+            pathOnly.endsWith('.html')
+          const isDevModule =
+            pathOnly.includes('/src/') ||
+            pathOnly.includes('/@vite/') ||
+            pathOnly.includes('/@fs/') ||
+            pathOnly.includes('/@id/') ||
+            pathOnly.endsWith('.css')
+          if (isHtmlEntry || isDevModule) {
+            const setHeader = res.setHeader.bind(res)
+            res.setHeader = ((name: string, value: number | string | readonly string[]) => {
+              if (String(name).toLowerCase() === 'cache-control') {
+                return setHeader('Cache-Control', 'no-store, no-cache, must-revalidate')
+              }
+              return setHeader(name, value)
+            }) as typeof res.setHeader
+            setHeader('Cache-Control', 'no-store, no-cache, must-revalidate')
+            setHeader('Pragma', 'no-cache')
+            setHeader('Expires', '0')
+          }
+          next()
+        })
         if (!publicBase) return
         server.middlewares.use((req, res, next) => {
           const url = req.url ?? ''

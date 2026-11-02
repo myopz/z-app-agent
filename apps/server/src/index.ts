@@ -35,6 +35,34 @@ app.get('/healthz', (c) => c.json({ ok: true, service: 'z-app-agent-server' }))
 
 app.route('/', projectsRouter)
 
+function applyPreviewCacheHeaders(outHeaders: Headers, suffix: string, contentType: string) {
+  const path = suffix.split('?')[0] ?? '/'
+  const ctype = contentType.toLowerCase()
+  const noStore =
+    path === '/' ||
+    path.endsWith('.html') ||
+    ctype.includes('text/html') ||
+    ctype.includes('javascript') ||
+    ctype.includes('text/css') ||
+    ctype.includes('text/x-typescript') ||
+    /\.(css|js|mjs|tsx?|jsx?)$/i.test(path) ||
+    path.includes('/src/') ||
+    path.includes('/@vite/') ||
+    path.includes('/@id/')
+  if (!noStore) return
+  outHeaders.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+  outHeaders.set('Pragma', 'no-cache')
+  outHeaders.set('Expires', '0')
+}
+
+function finalizePreviewResponse(res: Response, suffix: string) {
+  const outHeaders = new Headers(res.headers)
+  outHeaders.delete('x-frame-options')
+  outHeaders.delete('content-security-policy')
+  applyPreviewCacheHeaders(outHeaders, suffix, outHeaders.get('content-type') || '')
+  return new Response(res.body, { status: res.status, headers: outHeaders })
+}
+
 async function proxyPreview(c: {
   req: { param: (k: string) => string; path: string; url: string; method: string; raw: Request }
 }) {
@@ -70,10 +98,7 @@ async function proxyPreview(c: {
       body: ['GET', 'HEAD'].includes(c.req.method) ? undefined : await c.req.raw.arrayBuffer(),
       redirect: 'manual',
     })
-    const outHeaders = new Headers(res.headers)
-    outHeaders.delete('x-frame-options')
-    outHeaders.delete('content-security-policy')
-    return new Response(res.body, { status: res.status, headers: outHeaders })
+    return finalizePreviewResponse(res, suffix)
   } catch (err) {
     // Stale port / crashed vite — clear and try one restart
     stopPreview(id)
@@ -87,10 +112,7 @@ async function proxyPreview(c: {
         body: ['GET', 'HEAD'].includes(c.req.method) ? undefined : undefined,
         redirect: 'manual',
       })
-      const outHeaders = new Headers(res.headers)
-      outHeaders.delete('x-frame-options')
-      outHeaders.delete('content-security-policy')
-      return new Response(res.body, { status: res.status, headers: outHeaders })
+      return finalizePreviewResponse(res, suffix)
     } catch (retryErr) {
       const msg = retryErr instanceof Error ? retryErr.message : String(retryErr)
       const cause = err instanceof Error ? err.message : String(err)
