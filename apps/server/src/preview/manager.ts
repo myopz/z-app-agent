@@ -65,13 +65,16 @@ export function getPreviewPort(projectId: string): number | null {
   return isSlotAlive(slot) ? slot!.port : null
 }
 
-export async function ensurePreview(projectId: string): Promise<{ url: string; port: number }> {
+export async function ensurePreview(
+  projectId: string,
+  opts?: { force?: boolean },
+): Promise<{ url: string; port: number }> {
   const base = previewBase(projectId)
   dropDeadSlot(projectId)
   const existing = slots.get(projectId)
 
   // Reuse only if process is alive and was started with the correct iframe base
-  if (isSlotAlive(existing) && existing && existing.base === base) {
+  if (!opts?.force && isSlotAlive(existing) && existing && existing.base === base) {
     const url = base
     publish(projectId, { type: 'preview.ready', url })
     return { url, port: existing.port }
@@ -81,6 +84,9 @@ export async function ensurePreview(projectId: string): Promise<{ url: string; p
     existing.proc?.kill('SIGTERM')
     freePort(existing.port)
     slots.delete(projectId)
+    updateProjectPort(projectId, null)
+    // brief pause so the port is released before re-bind
+    await new Promise((r) => setTimeout(r, 250))
   }
 
   const cwd = frontendRoot(projectId)

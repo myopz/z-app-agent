@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { looksLikeToolAttempt, parseToolCalls, stripToolCallFences } from './parse-tool-calls.ts'
+import {
+  extractCodeFenceWrites,
+  looksLikeToolAttempt,
+  parseToolCalls,
+  stripToolCallFences,
+} from './parse-tool-calls.ts'
 
 test('parses fenced tool_call', () => {
   const text = `Hello
@@ -31,6 +36,25 @@ test('coerces edit_file+content to write_file', () => {
   assert.equal(calls.length, 1)
   assert.equal(calls[0]?.name, 'write_file')
   assert.ok(String(calls[0]?.args.content).includes('export default'))
+})
+
+test('promotes tsx chat dump to write_file (root cause bridge)', () => {
+  const text = `I will update App.tsx:
+
+\`\`\`tsx
+import { useState } from 'react'
+export default function App() {
+  return <main>Scientific</main>
+}
+\`\`\`
+
+DONE`
+  const calls = parseToolCalls(text)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0]?.name, 'write_file')
+  assert.equal(calls[0]?.args.path, 'app/frontend/src/App.tsx')
+  assert.match(String(calls[0]?.args.content), /Scientific/)
+  assert.equal(extractCodeFenceWrites(text).length, 1)
 })
 
 test('looksLikeToolAttempt detects named fences', () => {

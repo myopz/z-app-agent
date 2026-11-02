@@ -1,3 +1,5 @@
+import type { ToolCall, ToolName } from '@z-app-agent/shared'
+import { ToolCallSchema } from '@z-app-agent/shared'
 import {
   LLM_API_KEY,
   LLM_BASE_URL,
@@ -5,6 +7,7 @@ import {
   LLM_TIMEOUT_MS,
   llmExtraHeaders,
 } from '../paths.ts'
+import { toOpenAiTools } from '../tools/openai-tools.ts'
 
 export class LlmError extends Error {
   status: number
@@ -16,14 +19,27 @@ export class LlmError extends Error {
 }
 
 export type ChatMessage = {
-  role: 'system' | 'user' | 'assistant'
+  role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
+  tool_call_id?: string
+  name?: string
 }
 
 export type LlmChatOptions = {
   signal?: AbortSignal
   temperature?: number
   model?: string
+  /** OpenAI-compatible function tools (names). */
+  tools?: ToolName[]
+  /** Force at least one tool call when supported by the provider. */
+  toolChoice?: 'auto' | 'required' | 'none'
+}
+
+export type ChatCompleteResult = {
+  text: string
+  toolCalls: ToolCall[]
+  /** Provider returned native tool_calls */
+  usedNativeTools: boolean
 }
 
 function chatCompletionsUrl() {
@@ -61,13 +77,24 @@ export function getLlmConfigPublic() {
 export async function chatComplete(
   messages: ChatMessage[],
   opts?: LlmChatOptions,
-): Promise<string> {
+): Promise<ChatCompleteResult> {
   let lastErr: unknown
+  let disableTools = false
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      return await chatCompleteOnce(messages, opts)
+      return await chatCompleteOnce(messages, opts, disableTools)
     } catch (err) {
       lastErr = err
+      // Provider may reject tools — retry once without native tools
+      if (
+        !disableTools &&
+        opts?.tools?.length &&
+        err instanceof LlmError &&
+        (err.status === 400 || err.status === 404 || err.status === 422)
+      ) {
+        disableTools = true
+        continue
+      }
       if (err instanceof LlmError && err.status >= 400 && err.status < 500 && err.status !== 429) {
         throw err
       }
@@ -79,19 +106,35 @@ export async function chatComplete(
 
 async function chatCompleteOnce(
   messages: ChatMessage[],
-  opts?: LlmChatOptions,
-): Promise<string> {
+  opts: LlmChatOptions | undefined,
+  disableTools: boolean,
+): Promise<ChatCompleteResult> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS)
   const onAbort = () => controller.abort()
   opts?.signal?.addEventListener('abort', onAbort)
 
   try {
-    const body = {
+    const useTools = !disableTools && Boolean(opts?.tools?.length)
+    const body: Record<string, unknown> = {
       model: resolveModel(opts?.model),
-      messages,
+      messages: messages.map((m) => {
+        if (m.role === 'tool') {
+          return {
+            role: 'tool',
+            content: m.content,
+            tool_call_id: m.tool_call_id ?? 'tool',
+            ...(m.name ? { name: m.name } : {}),
+          }
+        }
+        return { role: m.role, content: m.content }
+      }),
       stream: false,
       temperature: opts?.temperature ?? 0.2,
+    }
+    if (useTools && opts?.tools) {
+      body.tools = toOpenAiTools(opts.tools)
+      body.tool_choice = opts.toolChoice ?? 'auto'
     }
 
     const res = await fetch(chatCompletionsUrl(), {
@@ -105,19 +148,48 @@ async function chatCompleteOnce(
       throw new LlmError(res.status, text || res.statusText)
     }
     const json = (await res.json()) as {
-      choices?: Array<{ message?: { content?: string | Array<{ type?: string; text?: string }> } }>
+      choices?: Array<{
+        message?: {
+          content?: string | Array<{ type?: string; text?: string }> | null
+          tool_calls?: Array<{
+            id?: string
+            type?: string
+            function?: { name?: string; arguments?: string }
+          }>
+        }
+      }>
     }
-    const raw = json.choices?.[0]?.message?.content
-    const content =
+    const message = json.choices?.[0]?.message
+    const raw = message?.content
+    const text =
       typeof raw === 'string'
         ? raw
         : Array.isArray(raw)
           ? raw.map((p) => (typeof p === 'string' ? p : p.text ?? '')).join('')
-          : null
-    if (typeof content !== 'string' || !content) {
+          : ''
+
+    const toolCalls: ToolCall[] = []
+    for (const tc of message?.tool_calls ?? []) {
+      const name = tc.function?.name
+      const argsRaw = tc.function?.arguments ?? '{}'
+      if (!name) continue
+      try {
+        const args = JSON.parse(argsRaw) as Record<string, unknown>
+        toolCalls.push(ToolCallSchema.parse({ name, args }))
+      } catch {
+        // skip malformed native tool call
+      }
+    }
+
+    if (!text && toolCalls.length === 0) {
       throw new LlmError(502, 'empty_llm_content')
     }
-    return content
+
+    return {
+      text: text || '',
+      toolCalls,
+      usedNativeTools: toolCalls.length > 0,
+    }
   } catch (err) {
     if (err instanceof LlmError) throw err
     if (err instanceof Error && err.name === 'AbortError') {

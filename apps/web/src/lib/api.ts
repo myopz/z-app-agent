@@ -146,6 +146,12 @@ export function resolveIssue(id: string, issueId: string) {
   return fetch(`/api/projects/${id}/issues/${issueId}/resolve`, { method: 'POST' })
 }
 
-export function startPreview(id: string) {
-  return json<{ url: string }>(fetch(`/api/projects/${id}/preview`, { method: 'POST' }))
+export function startPreview(id: string, opts?: { force?: boolean }) {
+  return json<{ url: string; port: number }>(
+    fetch(`/api/projects/${id}/preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force: Boolean(opts?.force) }),
+    }),
+  )
 }

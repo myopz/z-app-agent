@@ -245,8 +245,9 @@ projectsRouter.post('/api/projects/:id/issues/:issueId/resolve', async (c) => {
 
 projectsRouter.post('/api/projects/:id/preview', async (c) => {
   const id = c.req.param('id')
+  const body = (await c.req.json().catch(() => ({}))) as { force?: boolean }
   try {
-    const { url, port } = await ensurePreview(id)
+    const { url, port } = await ensurePreview(id, { force: Boolean(body.force) })
     updateProjectPort(id, port)
     return c.json({ url, port })
   } catch (err) {

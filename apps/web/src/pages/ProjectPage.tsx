@@ -100,6 +100,7 @@ export function ProjectPage() {
   const [terminal, setTerminal] = useState('')
   const [consoleLog, setConsoleLog] = useState('')
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const [previewKey, setPreviewKey] = useState(0)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [fileContent, setFileContent] = useState('')
@@ -250,7 +251,12 @@ export function ProjectPage() {
         const message: Message = {
           id: event.message_id,
           project_id: id,
-          role: event.agent_id ? 'assistant' : 'system',
+          role:
+            event.kind === 'user' || event.kind === 'answers'
+              ? 'user'
+              : event.agent_id
+                ? 'assistant'
+                : 'system',
           agent_id: event.agent_id,
           kind: event.kind,
           content: event.content,
@@ -314,11 +320,14 @@ export function ProjectPage() {
         setRunStatus(event.status)
         setPhase(event.phase)
         break
-      case 'preview.ready':
-        setPreviewUrl(event.url)
+      case 'preview.ready': {
+        const bust = `${event.url}${event.url.includes('?') ? '&' : '?'}t=${Date.now()}`
+        setPreviewUrl(bust)
+        setPreviewKey((k) => k + 1)
         setPreviewLoading(false)
         setRightTab('app')
         break
+      }
       case 'error':
         setError(`${event.code}: ${event.message}`)
         if (
@@ -398,21 +407,27 @@ export function ProjectPage() {
     [id],
   )
 
-  const loadPreview = useCallback(async () => {
-    setPreviewLoading(true)
-    try {
-      const r = await startPreview(id)
-      setPreviewUrl(r.url)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setPreviewLoading(false)
-    }
-  }, [id])
+  const loadPreview = useCallback(
+    async (opts?: { force?: boolean }) => {
+      setPreviewLoading(true)
+      try {
+        const r = await startPreview(id, { force: opts?.force })
+        const bust = `${r.url}${r.url.includes('?') ? '&' : '?'}t=${Date.now()}`
+        setPreviewUrl(bust)
+        setPreviewKey((k) => k + 1)
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+      } finally {
+        setPreviewLoading(false)
+      }
+    },
+    [id],
+  )
 
   useEffect(() => {
     setPreviewUrl(null)
-    void loadPreview()
+    setPreviewKey(0)
+    void loadPreview({ force: false })
   }, [loadPreview])
 
   useEffect(() => {
@@ -598,7 +613,7 @@ export function ProjectPage() {
                 type="button"
                 disabled={previewLoading}
                 className="text-xs px-2 py-1 rounded border border-slate-300 dark:border-slate-700 disabled:opacity-50"
-                onClick={() => void loadPreview()}
+                onClick={() => void loadPreview({ force: true })}
               >
                 {previewLoading ? '加载中…' : '刷新预览'}
               </button>
@@ -675,14 +690,14 @@ export function ProjectPage() {
               )}
               {previewUrl ? (
                 <iframe
-                  key={previewUrl}
+                  key={`${previewKey}-${previewUrl}`}
                   title="应用预览"
                   src={previewUrl}
                   className="w-full h-full border-0 bg-white"
                 />
               ) : (
                 <div className="h-full grid place-items-center text-slate-500 text-sm px-6 text-center">
-                  构建完成后会显示应用，也可点击「加载预览」。
+                  构建完成后会显示应用，也可点击「刷新预览」。
                 </div>
               )}
             </div>
@@ -771,8 +786,12 @@ function MessageBubble({
   const label =
     message.agent_id && message.agent_id in ROLE_LABELS
       ? ROLE_LABELS[message.agent_id as RoleId]
-      : message.role
-  const isUser = message.role === 'user'
+      : message.role === 'user' || message.kind === 'user'
+        ? '用户'
+        : message.role === 'system'
+          ? '系统'
+          : message.role
+  const isUser = message.role === 'user' || message.kind === 'user'
   const long = !isUser && (text.length > 280 || text.split('\n').length > 8)
   const preview = text.replace(/\s+/g, ' ').trim().slice(0, 100)
 
@@ -781,9 +800,9 @@ function MessageBubble({
       <Collapsible
         defaultOpen={isUser || !long}
         title={
-          <span className="text-[11px] uppercase tracking-wide text-sky-700 dark:text-sky-400/90">
+          <span className="text-[11px] tracking-wide text-sky-700 dark:text-sky-400/90">
             {label}
-            {long ? <span className="normal-case text-slate-400"> · 过程</span> : null}
+            {long ? <span className="text-slate-400"> · 过程</span> : null}
           </span>
         }
         subtitle={long ? preview + (text.length > 100 ? '…' : '') : undefined}

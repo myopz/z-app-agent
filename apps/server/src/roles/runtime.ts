@@ -1,10 +1,10 @@
 import { nanoid } from 'nanoid'
-import type { Brief, RoleId } from '@z-app-agent/shared'
+import type { Brief, RoleId, ToolCall } from '@z-app-agent/shared'
 import { insertMessage, listMessages } from '../db/repos.ts'
 import { publish } from '../events/bus.ts'
 import { chatComplete } from '../llm/client.ts'
 import { assembleMessages } from '../prompt/assembler.ts'
-import { executeTool } from '../tools/executor.ts'
+import { executeTool, isWriteTool } from '../tools/executor.ts'
 import {
   looksLikeToolAttempt,
   parseToolCalls,
@@ -12,7 +12,7 @@ import {
 } from '../tools/parse-tool-calls.ts'
 import { ROLE_TOOLS } from './prompts.ts'
 
-const MAX_ITERS = 8
+const MAX_ITERS = 10
 
 export async function runRole(input: {
   projectId: string
@@ -21,8 +21,19 @@ export async function runRole(input: {
   task: string
   brief?: Brief | null
   signal?: AbortSignal
-}): Promise<{ text: string; messageId: string }> {
-  const allowed = new Set(ROLE_TOOLS[input.role])
+  /** When true, refuse to finish until a write_file/edit_file succeeds. */
+  requireWrite?: boolean
+}): Promise<{ text: string; messageId: string; wroteFiles: boolean }> {
+  const allowedList = ROLE_TOOLS[input.role]
+  const allowed = new Set(allowedList)
+  const canWrite = allowedList.some((t) => isWriteTool(t))
+  const verifyOnly =
+    /\bVERIFICATION\b/i.test(input.task) ||
+    /\bRe-verify\b/i.test(input.task) ||
+    /\bread-only first\b/i.test(input.task)
+  const requireWrite =
+    input.requireWrite ?? (input.role === 'alex' && canWrite && !verifyOnly)
+
   const history = listMessages(input.projectId).map((m) => ({
     role: m.role,
     agent_id: m.agent_id,
@@ -37,6 +48,8 @@ export async function runRole(input: {
   let messageId = nanoid()
   let lastText = ''
   const toolResults: string[] = []
+  let wroteFiles = false
+  let wroteThisTurn = false
 
   publish(input.projectId, {
     type: 'card',
@@ -50,6 +63,7 @@ export async function runRole(input: {
 
   for (let i = 0; i < MAX_ITERS; i++) {
     if (input.signal?.aborted) throw new Error('aborted')
+    wroteThisTurn = false
     const userText =
       toolResults.length === 0
         ? input.task
@@ -63,19 +77,40 @@ export async function runRole(input: {
       projectId: input.projectId,
     })
 
-    lastText = await chatComplete(msgs, { signal: input.signal })
+    const forceTool =
+      canWrite &&
+      requireWrite &&
+      !wroteFiles &&
+      i < 4 &&
+      allowedList.length > 0
+
+    const llm = await chatComplete(msgs, {
+      signal: input.signal,
+      tools: allowedList.length ? allowedList : undefined,
+      toolChoice: forceTool ? 'required' : allowedList.length ? 'auto' : 'none',
+    })
+
+    lastText = llm.text
     publish(input.projectId, {
       type: 'message.delta',
       message_id: messageId,
-      text: lastText,
+      text: lastText || (llm.toolCalls.length ? `[native tools: ${llm.toolCalls.map((c) => c.name).join(', ')}]` : ''),
       role: input.role,
     })
 
-    const calls = parseToolCalls(lastText).filter((c) => allowed.has(c.name))
+    const fenceCalls = parseToolCalls(lastText)
+    const calls = mergeToolCalls(llm.toolCalls, fenceCalls).filter((c) => allowed.has(c.name))
+
     if (calls.length === 0) {
       if (looksLikeToolAttempt(lastText)) {
         toolResults.push(
-          'ERROR: tool fence found but could not parse. Emit exactly:\n```tool_call\n{"name":"write_file","args":{"path":"app/frontend/src/App.tsx","content":"..."}}\n```',
+          'ERROR: tool fence found but could not parse. Use native tools or emit:\n```tool_call\n{"name":"write_file","args":{"path":"app/frontend/src/App.tsx","content":"..."}}\n```\nDo NOT put source only in ```tsx chat fences — it will not save the file unless promoted.',
+        )
+        continue
+      }
+      if (requireWrite && canWrite && !wroteFiles) {
+        toolResults.push(
+          'ERROR: no file writes yet. Chat/markdown code does not change the workspace by itself. Call write_file (or emit a full ```tsx source block for App.tsx which will be saved). Continue implementing.',
         )
         continue
       }
@@ -83,10 +118,6 @@ export async function runRole(input: {
     }
 
     for (const call of calls) {
-      if (!allowed.has(call.name)) {
-        toolResults.push(`${call.name}: not allowed for ${input.role}`)
-        continue
-      }
       const result = await executeTool(call, {
         projectId: input.projectId,
         runId: input.runId,
@@ -94,17 +125,34 @@ export async function runRole(input: {
         messageId,
         signal: input.signal,
       })
+      if (isWriteTool(call.name) && result.ok) {
+        wroteFiles = true
+        wroteThisTurn = true
+      }
       toolResults.push(
         `${call.name}: ${result.summary}\n${JSON.stringify(result.data ?? {}).slice(0, 4000)}`,
       )
     }
 
-    if (/\bDONE\b/i.test(stripToolCallFences(lastText))) {
+    const saidDone = /\bDONE\b/i.test(stripToolCallFences(lastText))
+    if (saidDone) {
+      if (requireWrite && canWrite && !wroteFiles) {
+        toolResults.push(
+          'ERROR: you said DONE but no write_file/edit_file succeeded. Call write_file now.',
+        )
+        continue
+      }
       break
+    }
+
+    // After a successful write, allow a short summary turn without forcing more tools
+    if (wroteThisTurn && requireWrite) {
+      // keep looping so model can say DONE, but stop forcing tool_choice required next iters
+      continue
     }
   }
 
-  const visible = stripToolCallFences(lastText) || lastText
+  const visible = stripToolCallFences(lastText) || lastText || (wroteFiles ? 'DONE' : '')
   insertMessage({
     id: messageId,
     project_id: input.projectId,
@@ -120,7 +168,19 @@ export async function runRole(input: {
     kind: 'agent',
     content: { text: visible },
   })
-  return { text: visible, messageId }
+  return { text: visible, messageId, wroteFiles }
+}
+
+function mergeToolCalls(native: ToolCall[], fenced: ToolCall[]): ToolCall[] {
+  const out: ToolCall[] = []
+  const seen = new Set<string>()
+  for (const call of [...native, ...fenced]) {
+    const key = `${call.name}:${JSON.stringify(call.args)}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(call)
+  }
+  return out
 }
 
 export function extractFenceJson<T = unknown>(text: string, fence: string): T | null {

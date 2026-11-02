@@ -13,6 +13,7 @@ import {
   getRun,
   insertIssue,
   insertMessage,
+  listPatchesForMessage,
   saveCheckpoint,
   updateIssueStatus,
   updateRun,
@@ -470,11 +471,43 @@ async function executeSpecialists(
   await runAlexPath(projectId, runId, 'Implement the brief in the workspace.', brief, signal)
 }
 
-function isScaffoldAppStillPresent(projectId: string): boolean {
+function readAppTsx(projectId: string): string {
   const appPath = path.join(workspaceRoot(projectId), 'app/frontend/src/App.tsx')
-  if (!fs.existsSync(appPath)) return true
-  const text = fs.readFileSync(appPath, 'utf8')
-  return text.includes('Ready to build')
+  if (!fs.existsSync(appPath)) return ''
+  return fs.readFileSync(appPath, 'utf8')
+}
+
+function isScaffoldAppStillPresent(projectId: string): boolean {
+  const text = readAppTsx(projectId)
+  return !text || text.includes('Ready to build') || text.trim() === '...' || text.trim().length < 40
+}
+
+function countFrontendPatches(messageId: string): number {
+  return listPatchesForMessage(messageId).filter((p) => p.path.includes('app/frontend')).length
+}
+
+/** Deterministic gaps the LLM often lies about in verify fences. */
+function localAcceptanceGaps(projectId: string, brief: Brief | null): string[] {
+  const text = readAppTsx(projectId)
+  const gaps: string[] = []
+  if (isScaffoldAppStillPresent(projectId)) {
+    gaps.push('App.tsx is still scaffold / empty')
+  }
+  const hay = `${brief?.goal ?? ''}\n${(brief?.acceptance ?? []).join('\n')}\n${(brief?.sections ?? []).join('\n')}`.toLowerCase()
+  if (/scientific|科学|trig|sin\b|cos\b|tan\b|log\b|sqrt|exponent/.test(hay)) {
+    const needed = ['sin', 'cos', 'tan', 'log', 'sqrt', '√']
+    const hit = needed.filter((k) => text.toLowerCase().includes(k.toLowerCase()) || text.includes(k))
+    if (hit.length < 3) {
+      gaps.push(`scientific calculator UI missing (found ${hit.join(', ') || 'none'}; need sin/cos/tan/log/√)`)
+    }
+  }
+  if (/counter|计数/.test(hay) && !/\bcount\b|setCount/i.test(text)) {
+    gaps.push('counter state/UI not found in App.tsx')
+  }
+  if (/hello|问候|greeting/.test(hay) && !/hello|greeting|name/i.test(text)) {
+    gaps.push('greeting UI not found in App.tsx')
+  }
+  return gaps
 }
 
 async function runAlexPath(
@@ -493,17 +526,23 @@ async function runAlexPath(
     brief,
     task,
     signal,
+    requireWrite: true,
   })
 
-  // Models sometimes describe code without calling tools — force a rewrite pass.
-  if (isScaffoldAppStillPresent(projectId)) {
+  const needsRewrite =
+    isScaffoldAppStillPresent(projectId) || countFrontendPatches(alex.messageId) === 0
+  // Models often describe code without calling tools — force a real write pass.
+  if (needsRewrite) {
+    const reason = isScaffoldAppStillPresent(projectId)
+      ? 'App.tsx is still scaffold/empty'
+      : 'no app/frontend file writes were recorded'
     publish(projectId, {
       type: 'message',
       message_id: nanoid(),
       agent_id: null,
       kind: 'system',
       content: {
-        text: 'Scaffold App.tsx still present — asking Alex to write real UI via write_file.',
+        text: `${reason} — asking Alex to write_file real UI for the BRIEF.`,
       },
     })
     alex = await runRole({
@@ -511,8 +550,9 @@ async function runAlexPath(
       runId,
       role: 'alex',
       brief,
-      task: `CRITICAL: app/frontend/src/App.tsx still shows "Ready to build". You did not apply file changes. Call write_file now with a complete TypeScript React implementation that satisfies the BRIEF acceptance criteria. Do not only describe the code.`,
+      task: `CRITICAL: ${reason}. You must call write_file on app/frontend/src/App.tsx with a COMPLETE TypeScript React implementation that satisfies the BRIEF acceptance. Do not only describe the code. Include all required UI controls from acceptance/goal.`,
       signal,
+      requireWrite: true,
     })
   }
 
@@ -693,6 +733,7 @@ async function verifyAcceptance(input: {
     role: 'alex',
     brief,
     signal,
+    requireWrite: false,
     task: `VERIFICATION PASS (read-only first).
 1) Use read_file on app/frontend/src/App.tsx and any related UI files.
 2) Check acceptance criteria:
@@ -713,7 +754,8 @@ Do NOT say DONE until the verify fence is present. Do not rewrite files in this 
     'verify',
   )
 
-  if (result?.pass === true) {
+  const localGaps = localAcceptanceGaps(projectId, brief)
+  if (result?.pass === true && localGaps.length === 0) {
     publish(projectId, {
       type: 'message',
       message_id: nanoid(),
@@ -725,9 +767,14 @@ Do NOT say DONE until the verify fence is present. Do not rewrite files in this 
   }
 
   const failNotes =
-    result?.notes ||
-    result?.fix_hint ||
-    'Verification did not confirm acceptance; implementation may be incomplete.'
+    (localGaps.length
+      ? `Local check failed: ${localGaps.join('; ')}. `
+      : '') +
+    (result?.notes ||
+      result?.fix_hint ||
+      (result?.pass === true
+        ? 'Model claimed pass but code does not match acceptance.'
+        : 'Verification did not confirm acceptance; implementation may be incomplete.'))
 
   publish(projectId, {
     type: 'message',
@@ -765,6 +812,7 @@ Do NOT say DONE until the verify fence is present. Do not rewrite files in this 
     role: 'alex',
     brief,
     signal,
+    requireWrite: false,
     task: `Re-verify after fixes. read_file App.tsx and emit:
 \`\`\`verify
 {"pass":true|false,"notes":"..."}
@@ -773,16 +821,17 @@ Acceptance:
 ${acceptance}`,
   })
   const re = extractFenceJson<{ pass?: boolean; notes?: string }>(recheck.text, 'verify')
+  const reGaps = localAcceptanceGaps(projectId, brief)
+  const rePass = re?.pass === true && reGaps.length === 0
   publish(projectId, {
     type: 'message',
     message_id: nanoid(),
     agent_id: null,
     kind: 'system',
     content: {
-      text:
-        re?.pass === true
-          ? `复验通过：${re.notes ?? 'ok'}`
-          : `复验仍有风险：${re?.notes ?? 'manual check recommended'}（build/preview 已通过）`,
+      text: rePass
+        ? `复验通过：${re?.notes ?? 'ok'}`
+        : `复验仍有风险：${reGaps.join('; ') || re?.notes || 'manual check recommended'}（build/preview 已通过）`,
     },
   })
 }
@@ -820,6 +869,7 @@ async function openIssueAndMaybeFix(input: {
     role: 'alex',
     brief,
     signal,
+    requireWrite: true,
     task: `AUTO-FIX required for ${phase} failure (attempt ${attempt + 1}/${MAX_FIX_ATTEMPTS}).
 You MUST call write_file or edit_file — explaining alone is failure.
 
