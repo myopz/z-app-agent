@@ -23,6 +23,7 @@ import { updateAtomsDoc } from '../memory/atoms-docs.ts'
 import { MAX_FIX_ATTEMPTS } from '../paths.ts'
 import { extractFenceJson, runRole } from '../roles/runtime.ts'
 import { commitSnapshot } from '../snap/snapshot.ts'
+import { isScaffoldApp, localAcceptanceGaps } from '../quality/app-ui.ts'
 import { executeTool } from '../tools/executor.ts'
 import { workspaceRoot } from '../tools/sandbox-path.ts'
 import crypto from 'node:crypto'
@@ -286,7 +287,7 @@ async function runTeamPath(
       : null,
   )
   if (parsedBrief.success) {
-    brief = parsedBrief.data
+    brief = enforceUiQualityBrief(parsedBrief.data)
   } else if (rawBrief) {
     publish(projectId, {
       type: 'message',
@@ -301,9 +302,12 @@ async function runTeamPath(
       goal: text.slice(0, 200),
       sections: [text],
       constraints: [],
-      quality_rules: ['Must preview successfully'],
+      quality_rules: [
+        'Must preview successfully',
+        'UI must use Tailwind className (no bare unstyled controls)',
+      ],
       assignees: ['emma', 'bob', 'alex'],
-      acceptance: ['Preview works'],
+      acceptance: ['Preview shows a styled UI matching the goal'],
       source_message_id: sourceMessageId,
     })
   } else {
@@ -311,9 +315,12 @@ async function runTeamPath(
       goal: text.slice(0, 200),
       sections: [text],
       constraints: [],
-      quality_rules: ['Must preview successfully'],
+      quality_rules: [
+        'Must preview successfully',
+        'UI must use Tailwind className (no bare unstyled controls)',
+      ],
       assignees: ['emma', 'bob', 'alex'],
-      acceptance: ['Preview works'],
+      acceptance: ['Preview shows a styled UI matching the goal'],
       source_message_id: sourceMessageId,
     })
   }
@@ -471,43 +478,22 @@ async function executeSpecialists(
   await runAlexPath(projectId, runId, 'Implement the brief in the workspace.', brief, signal)
 }
 
-function readAppTsx(projectId: string): string {
-  const appPath = path.join(workspaceRoot(projectId), 'app/frontend/src/App.tsx')
-  if (!fs.existsSync(appPath)) return ''
-  return fs.readFileSync(appPath, 'utf8')
-}
-
-function isScaffoldAppStillPresent(projectId: string): boolean {
-  const text = readAppTsx(projectId)
-  return !text || text.includes('Ready to build') || text.trim() === '...' || text.trim().length < 40
-}
-
 function countFrontendPatches(messageId: string): number {
   return listPatchesForMessage(messageId).filter((p) => p.path.includes('app/frontend')).length
 }
 
-/** Deterministic gaps the LLM often lies about in verify fences. */
-function localAcceptanceGaps(projectId: string, brief: Brief | null): string[] {
-  const text = readAppTsx(projectId)
-  const gaps: string[] = []
-  if (isScaffoldAppStillPresent(projectId)) {
-    gaps.push('App.tsx is still scaffold / empty')
-  }
-  const hay = `${brief?.goal ?? ''}\n${(brief?.acceptance ?? []).join('\n')}\n${(brief?.sections ?? []).join('\n')}`.toLowerCase()
-  if (/scientific|科学|trig|sin\b|cos\b|tan\b|log\b|sqrt|exponent/.test(hay)) {
-    const needed = ['sin', 'cos', 'tan', 'log', 'sqrt', '√']
-    const hit = needed.filter((k) => text.toLowerCase().includes(k.toLowerCase()) || text.includes(k))
-    if (hit.length < 3) {
-      gaps.push(`scientific calculator UI missing (found ${hit.join(', ') || 'none'}; need sin/cos/tan/log/√)`)
-    }
-  }
-  if (/counter|计数/.test(hay) && !/\bcount\b|setCount/i.test(text)) {
-    gaps.push('counter state/UI not found in App.tsx')
-  }
-  if (/hello|问候|greeting/.test(hay) && !/hello|greeting|name/i.test(text)) {
-    gaps.push('greeting UI not found in App.tsx')
-  }
-  return gaps
+const UI_QUALITY_RULE = 'UI must use Tailwind className (no bare unstyled controls)'
+const UI_ACCEPTANCE = 'Preview shows a Tailwind-styled UI (not bare browser-default markup)'
+
+/** Brief always carries the visual-UI invariant — independent of what Mike emitted. */
+function enforceUiQualityBrief(brief: Brief): Brief {
+  const quality_rules = brief.quality_rules.some((r) => /tailwind|className|styled UI|bare/i.test(r))
+    ? brief.quality_rules
+    : [...brief.quality_rules, UI_QUALITY_RULE]
+  const acceptance = brief.acceptance.some((a) => /tailwind|styled|视觉|界面/i.test(a))
+    ? brief.acceptance
+    : [...brief.acceptance, UI_ACCEPTANCE]
+  return { ...brief, quality_rules, acceptance }
 }
 
 async function runAlexPath(
@@ -529,20 +515,25 @@ async function runAlexPath(
     requireWrite: true,
   })
 
+  const uiGaps = localAcceptanceGaps(projectId, brief)
   const needsRewrite =
-    isScaffoldAppStillPresent(projectId) || countFrontendPatches(alex.messageId) === 0
-  // Models often describe code without calling tools — force a real write pass.
+    isScaffoldApp(projectId) ||
+    countFrontendPatches(alex.messageId) === 0 ||
+    uiGaps.length > 0
+  // Models often describe code or ship bare HTML — force a real styled write pass.
   if (needsRewrite) {
-    const reason = isScaffoldAppStillPresent(projectId)
+    const reason = isScaffoldApp(projectId)
       ? 'App.tsx is still scaffold/empty'
-      : 'no app/frontend file writes were recorded'
+      : countFrontendPatches(alex.messageId) === 0
+        ? 'no app/frontend file writes were recorded'
+        : `UI quality gate failed: ${uiGaps.join('; ')}`
     publish(projectId, {
       type: 'message',
       message_id: nanoid(),
       agent_id: null,
       kind: 'system',
       content: {
-        text: `${reason} — asking Alex to write_file real UI for the BRIEF.`,
+        text: `${reason} — asking Alex to write_file a styled Tailwind UI for the BRIEF.`,
       },
     })
     alex = await runRole({
@@ -550,7 +541,13 @@ async function runAlexPath(
       runId,
       role: 'alex',
       brief,
-      task: `CRITICAL: ${reason}. You must call write_file on app/frontend/src/App.tsx with a COMPLETE TypeScript React implementation that satisfies the BRIEF acceptance. Do not only describe the code. Include all required UI controls from acceptance/goal.`,
+      task: `CRITICAL: ${reason}.
+You must call write_file on app/frontend/src/App.tsx with a COMPLETE TypeScript React + Tailwind implementation.
+Requirements:
+- Satisfy BRIEF acceptance/goal controls
+- Every interactive control (<button>/<input>/…) MUST have className
+- Use layout utilities (min-h-screen/flex/grid/padding/bg/…) — bare unstyled markup is REJECTED
+Do not only describe the code.`,
       signal,
       requireWrite: true,
     })
@@ -738,7 +735,8 @@ async function verifyAcceptance(input: {
 1) Use read_file on app/frontend/src/App.tsx and any related UI files.
 2) Check acceptance criteria:
 ${acceptance}
-3) Emit exactly one fence:
+3) Also fail if UI is bare/unstyled (missing Tailwind className on layout and controls).
+4) Emit exactly one fence:
 \`\`\`verify
 {"pass":true,"notes":"short evidence"}
 \`\`\`
@@ -880,7 +878,8 @@ TypeScript rules:
 Error / verify logs:
 ${logs.slice(0, 6000)}
 
-Steps: read_file the failing path, then write_file a complete corrected file.`,
+Steps: read_file the failing path, then write_file a complete corrected file.
+If the failure mentions Tailwind/className/bare controls, restyle the full App.tsx with a finished visual layout.`,
   })
 
   // Stay in resolving until rebuild proves success

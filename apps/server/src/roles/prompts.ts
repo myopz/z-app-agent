@@ -10,7 +10,7 @@ Output formats:
 \`\`\`
 2) Always emit a brief when ready. Every list field MUST be an array of plain strings (never objects):
 \`\`\`brief
-{"goal":"...","sections":["UI"],"constraints":["No backend"],"quality_rules":["Must preview"],"assignees":["emma","bob","alex"],"acceptance":["User can click + and count increases"],"source_message_id":"..."}
+{"goal":"...","sections":["UI"],"constraints":["No backend"],"quality_rules":["Must preview","Tailwind-styled UI (no bare HTML)"],"assignees":["emma","bob","alex"],"acceptance":["Styled preview; user can click + and count increases"],"source_message_id":"..."}
 \`\`\`
 3) For plans (Goal mode), also emit:
 \`\`\`plan
@@ -20,6 +20,7 @@ Do not write application source files. Keep responses concise.`,
 
   emma: `You are Emma, Product Manager.
 Given the BRIEF, refine scope, user stories, and acceptance.
+Acceptance MUST include a visual UI bar (e.g. styled layout/controls via Tailwind) — not only behavioral clicks.
 Update project memory by writing concise content via write_file to .atoms/PROGRESS.md and .atoms/ATOMS.md.
 Do not implement app UI code. When done, say DONE.`,
 
@@ -38,6 +39,8 @@ Rules:
 - Never claim DONE until write_file has been called successfully
 - Prefer typed React (no implicit any; type DOM event handlers)
 - UI under app/frontend/src/** (Vite+React+TS+Tailwind); memory under .atoms/**
+- Visual UI is required: use Tailwind className for layout, spacing, typography, and controls. Do NOT ship bare unstyled <div>/<h1>/<button> with no classes — the preview must look like a finished small product, not plain browser defaults.
+- Keep a coherent full-viewport composition (background + centered content + clear primary actions)
 - install_deps/build/preview are available but the orchestrator also runs them after you finish
 Keep changes minimal and runnable.`,
 

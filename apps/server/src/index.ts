@@ -59,7 +59,9 @@ async function proxyPreview(c: {
   const qs = c.req.url.includes('?') ? '?' + c.req.url.split('?')[1] : ''
   const target = `http://127.0.0.1:${port}${upstreamPrefix}${suffix}${qs}`
   const headers = new Headers(c.req.raw.headers)
-  headers.delete('host')
+  // 预览 Vite 只认本机 Host；保留公网 Host 会触发 allowedHosts 403
+  headers.set('host', `127.0.0.1:${port}`)
+  headers.delete('x-forwarded-host')
 
   try {
     const res = await fetch(target, {
@@ -78,6 +80,7 @@ async function proxyPreview(c: {
     try {
       const restarted = await ensurePreview(id)
       const retryTarget = `http://127.0.0.1:${restarted.port}${upstreamPrefix}${suffix}${qs}`
+      headers.set('host', `127.0.0.1:${restarted.port}`)
       const res = await fetch(retryTarget, {
         method: c.req.method,
         headers,

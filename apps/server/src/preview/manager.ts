@@ -83,6 +83,10 @@ export async function ensurePreview(
 
   if (existing) {
     existing.proc?.kill('SIGTERM')
+    await new Promise((r) => setTimeout(r, 300))
+    if (existing.proc && existing.proc.exitCode == null && !existing.proc.killed) {
+      existing.proc.kill('SIGKILL')
+    }
     freePort(existing.port)
     slots.delete(projectId)
     updateProjectPort(projectId, null)
@@ -155,15 +159,15 @@ export async function ensurePreview(
   updateProjectPort(projectId, port)
 
   try {
+    // 必须等 base 路径就绪；勿回退到 /，否则 iframe 会拿到错误文档
     await waitForHttp(`http://127.0.0.1:${port}${base}`, 60_000)
+    // 预热入口模块，避免 force 重启后 optimize-deps 未完成导致白屏
+    await waitForHttp(`http://127.0.0.1:${port}${base}src/main.tsx`, 60_000, {
+      requireJs: true,
+    })
   } catch (err) {
-    // fallback: some vite versions still answer on /
-    try {
-      await waitForHttp(`http://127.0.0.1:${port}/`, 5_000)
-    } catch {
-      stopPreview(projectId)
-      throw err
-    }
+    stopPreview(projectId)
+    throw err
   }
 
   const url = base
@@ -175,6 +179,11 @@ export function stopPreview(projectId: string) {
   const slot = slots.get(projectId)
   if (!slot) return
   slot.proc?.kill('SIGTERM')
+  try {
+    slot.proc?.kill('SIGKILL')
+  } catch {
+    // ignore
+  }
   freePort(slot.port)
   slots.delete(projectId)
   updateProjectPort(projectId, null)
@@ -201,14 +210,26 @@ function runCmd(projectId: string, cwd: string, cmd: string, args: string[]) {
   })
 }
 
-async function waitForHttp(url: string, timeoutMs: number) {
+async function waitForHttp(
+  url: string,
+  timeoutMs: number,
+  opts?: { requireJs?: boolean },
+) {
   const start = Date.now()
   let lastErr = ''
   while (Date.now() - start < timeoutMs) {
     try {
       const res = await fetch(url)
-      if (res.ok || res.status === 404) return
-      lastErr = `HTTP ${res.status}`
+      const ctype = res.headers.get('content-type') || ''
+      if (opts?.requireJs) {
+        if (res.ok && /javascript|ecmascript|typescript/i.test(ctype)) return
+        // Vite optimize-deps 进行中常见 504 / text/html 占位
+        lastErr = `HTTP ${res.status} content-type=${ctype || 'missing'}`
+      } else if (res.ok || res.status === 404) {
+        return
+      } else {
+        lastErr = `HTTP ${res.status}`
+      }
     } catch (err) {
       lastErr = err instanceof Error ? err.message : String(err)
     }

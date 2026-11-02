@@ -10,7 +10,9 @@ export default defineConfig({
   server: {
     host: '127.0.0.1',
     strictPort: true,
-    // Preview is embedded in an iframe behind /preview/:id — HMR ws would break.
-    hmr: previewBase === '/' ? true : false,
+    // 经 mac.ittoolplus.cn 反代时 Host 非 localhost
+    allowedHosts: true,
+    // iframe + 多级反代下 HMR/WebSocket 不可用，关掉避免白屏与报错遮罩
+    hmr: false,
   },
 })
