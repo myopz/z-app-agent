@@ -23,9 +23,8 @@ export function Sidebar({
   onNew?: () => void
   onDelete?: (project: Project) => void
 }) {
-  const recent = [...projects]
-    .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
-    .slice(0, 8)
+  const sorted = [...projects].sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+  const recent = sorted.slice(0, 8)
 
   if (collapsed) {
     return (
@@ -133,10 +132,10 @@ export function Sidebar({
         <span className="text-[11px] text-slate-400">{projects.length}</span>
       </div>
       <div className="mt-1 px-2 flex-1 min-h-0 overflow-auto space-y-0.5">
-        {projects.length === 0 && (
+        {sorted.length === 0 && (
           <p className="px-3 py-2 text-xs text-slate-500">还没有项目，在中间输入需求开始。</p>
         )}
-        {projects.map((p) => (
+        {sorted.map((p) => (
           <div
             key={p.id}
             className="group relative flex items-stretch rounded-lg hover:bg-slate-50 dark:hover:bg-slate-900/70"

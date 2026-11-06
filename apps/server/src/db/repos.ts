@@ -81,9 +81,8 @@ export function deleteProject(id: string): boolean {
 }
 
 export function updateProjectPort(id: string, port: number | null) {
-  getDb()
-    .prepare('UPDATE projects SET preview_port = ?, updated_at = ? WHERE id = ?')
-    .run(port, nowIso(), id)
+  // Runtime metadata only — opening preview must not change project sort order.
+  getDb().prepare('UPDATE projects SET preview_port = ? WHERE id = ?').run(port, id)
 }
 
 export function insertMessage(input: {
